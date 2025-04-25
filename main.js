@@ -8,7 +8,7 @@ function createWindow() {
     autoHideMenuBar: true,
     menubarvisibility: false,
     resizable: true,
-    icon: path.join(__dirname, 'assets', 'icon.jpeg'),
+    icon: path.join(__dirname, 'assets', 'icon.png'),
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -65,7 +65,8 @@ ipcMain.handle('save-playlist', async (event, playlist) => {
     defaultPath: 'playlist.json',
     filters: [
       { name: 'JSON Files', extensions: ['json'] }
-    ]
+    ],
+    properties: ['createDirectory', 'showOverwriteConfirmation']
   });
   if (!result.canceled && result.filePath) {
     // Validate playlist data and use original paths
@@ -80,8 +81,13 @@ ipcMain.handle('save-playlist', async (event, playlist) => {
     });
     
     const fs = require('fs');
-    fs.writeFileSync(result.filePath, JSON.stringify(playlistWithPaths, null, 2));
-    return true;
+    try {
+      fs.writeFileSync(result.filePath, JSON.stringify(playlistWithPaths, null, 2));
+      return true;
+    } catch (error) {
+      console.error('Error saving playlist:', error);
+      throw error;
+    }
   }
   return false;
 });

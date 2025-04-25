@@ -1038,6 +1038,9 @@
 
         async function handleLoadPlaylistFile() {
             try {
+                // Stop current playback first
+                stopSongInternal(true);
+                
                 const data = await window.electron.ipcRenderer.invoke('load-playlist');
                 if (!data) return;
 
