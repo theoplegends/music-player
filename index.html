@@ -932,6 +932,10 @@
                     continue;
                 }
                 
+                // Get the full path from the file object
+                const filePath = file.path;
+                console.log('Adding file with path:', filePath); // Debug log
+                
                 // Store the original file object which contains the path in Electron
                 player.playlist.push({
                     name: file.name,
@@ -1011,10 +1015,15 @@
                 displayMessage('Playlist empty.', 'info');
                 return;
             }
-            const list = player.playlist.map(s => ({
-                name: s.name,
-                path: s.file.path // In Electron, this is the full path
-            }));
+            const list = player.playlist.map(s => {
+                // Get the full path from the file object using webUtils
+                const filePath = window.electron.getFilePath(s.file);
+                console.log('File path:', filePath); // Debug log
+                return {
+                    name: s.name,
+                    path: filePath
+                };
+            });
             
             try {
                 const saved = await window.electron.ipcRenderer.invoke('save-playlist', list);
@@ -1043,18 +1052,37 @@
                 sourceNode = null;
 
                 // Try to load files from saved paths
-                data.forEach(item => {
+                for (const item of data) {
                     if (item.path) {
-                        // Create a file object from the path
-                        const file = new File([], item.name, { type: 'audio/mpeg' });
-                        file.path = item.path; // Store the original path
-                        player.playlist.push({
-                            name: item.name,
-                            file: file,
-                            buffer: undefined
-                        });
+                        try {
+                            // Verify the file exists
+                            const fileExists = await window.electron.ipcRenderer.invoke('check-file-exists', item.path);
+                            if (!fileExists) {
+                                console.warn(`File not found: ${item.path}`);
+                                continue;
+                            }
+
+                            // Get the file data from the main process
+                            const fileData = await window.electron.ipcRenderer.invoke('get-file-data', item.path);
+                            if (!fileData) {
+                                console.warn(`Could not read file: ${item.path}`);
+                                continue;
+                            }
+
+                            // Create a File object from the data
+                            const file = new File([fileData], item.name, { type: 'audio/mpeg' });
+                            file.path = item.path; // Store the original path
+                            
+                            player.playlist.push({
+                                name: item.name,
+                                file: file,
+                                buffer: undefined
+                            });
+                        } catch (error) {
+                            console.error(`Error loading file ${item.path}:`, error);
+                        }
                     }
-                });
+                }
 
                 resetProgress();
                 updatePlaylistDisplay();

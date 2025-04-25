@@ -35,6 +35,29 @@ ipcMain.handle('select-files', async () => {
   return result.filePaths;
 });
 
+// Handle file existence check
+ipcMain.handle('check-file-exists', async (event, filePath) => {
+  const fs = require('fs');
+  try {
+    await fs.promises.access(filePath, fs.constants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
+});
+
+// Handle getting file data
+ipcMain.handle('get-file-data', async (event, filePath) => {
+  const fs = require('fs');
+  try {
+    const data = await fs.promises.readFile(filePath);
+    return data;
+  } catch (error) {
+    console.error('Error reading file:', error);
+    return null;
+  }
+});
+
 // Handle save playlist
 ipcMain.handle('save-playlist', async (event, playlist) => {
   const result = await dialog.showSaveDialog({
@@ -44,10 +67,20 @@ ipcMain.handle('save-playlist', async (event, playlist) => {
       { name: 'JSON Files', extensions: ['json'] }
     ]
   });
-  if (!result.canceled) {
-    // Save the playlist with full paths
+  if (!result.canceled && result.filePath) {
+    // Validate playlist data and use original paths
+    const playlistWithPaths = playlist.map(song => {
+      if (!song || !song.path) {
+        throw new Error('Invalid song data: missing path');
+      }
+      return {
+        name: song.name,
+        path: song.path // Use the original path without resolving
+      };
+    });
+    
     const fs = require('fs');
-    fs.writeFileSync(result.filePath, JSON.stringify(playlist, null, 2));
+    fs.writeFileSync(result.filePath, JSON.stringify(playlistWithPaths, null, 2));
     return true;
   }
   return false;
@@ -65,7 +98,20 @@ ipcMain.handle('load-playlist', async () => {
   if (!result.canceled) {
     const fs = require('fs');
     const data = fs.readFileSync(result.filePaths[0], 'utf8');
-    return JSON.parse(data);
+    const playlist = JSON.parse(data);
+    
+    // Validate playlist data and ensure all paths are absolute
+    const playlistWithAbsolutePaths = playlist.map(song => {
+      if (!song || !song.path) {
+        throw new Error('Invalid song data: missing path');
+      }
+      return {
+        ...song,
+        path: path.resolve(song.path)
+      };
+    });
+    
+    return playlistWithAbsolutePaths;
   }
   return null;
 });
