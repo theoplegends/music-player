@@ -431,7 +431,7 @@
             <button id="stop" disabled title="Stop"><i class="ph-bold ph-stop"></i></button>
             <button id="next" disabled title="Next Song"><i class="ph-bold ph-skip-forward"></i></button>
             <button id="add-song" class="file-upload-button" title="Add Songs"><i class="ph-bold ph-plus-circle"></i> Add</button>
-            <input type="file" id="add-song-input" class="hidden-file-input" accept=".mp3, .wav, .ogg, .flac, audio/*" multiple>
+            <input type="file" id="add-song-input" class="hidden-file-input" accept=".mp3, .wav, .ogg, .flac, .m4a, .aac, audio/*" multiple>
             <button id="remove-song" disabled title="Remove Selected Song"><i class="ph-bold ph-trash"></i> Remove</button>
             <button id="move-up" disabled title="Move Song Up"><i class="ph-bold ph-arrow-fat-up"></i> Up</button>
             <button id="move-down" disabled title="Move Song Down"><i class="ph-bold ph-arrow-fat-down"></i> Down</button>
@@ -471,8 +471,8 @@
         <div id="message-box" class="hidden"></div>
 
         <div id="save-load-controls">
-            <button id="save-playlist" title="Save current playlist (names only)"><i class="ph-bold ph-floppy-disk"></i> Save</button>
-            <button id="load-playlist" title="Load playlist from file (names only)"><i class="ph-bold ph-folder-open"></i> Load</button>
+            <button id="save-playlist" title="Save current playlist to a JSON file"><i class="ph-bold ph-floppy-disk"></i> Save</button>
+            <button id="load-playlist" title="Load playlist from a JSON file"><i class="ph-bold ph-folder-open"></i> Load</button>
             <input type="file" id="load-playlist-input" class="hidden-file-input" accept=".json, application/json">
         </div>
     </div>
@@ -918,30 +918,40 @@
         }
 
         // --- Playlist Management ---
-        function addSongToPlaylist(files) {
+        /**
+         * Adds songs to the playlist.
+         * @param {FileList|Array<File|{file: File, handle?: FileSystemFileHandle}>} input
+         */
+        async function addSongToPlaylist(input) {
             initializeAudioContext();
-            if (!files || files.length === 0) {
+            const entries = Array.from(input || [], item => (item instanceof File ? { file: item } : item));
+            if (entries.length === 0) {
                 displayMessage('No files selected.', 'info');
                 return;
             }
             let addedCount = 0;
-            for (let i = 0; i < files.length; i++) {
-                const file = files[i];
-                if (!file.type.startsWith('audio/') && !/\.(mp3|wav|ogg|aac|flac)$/i.test(file.name)) {
+            for (const entry of entries) {
+                const file = entry && entry.file;
+                if (!file) continue;
+                if (!file.type.startsWith('audio/') && !/\.(mp3|wav|ogg|aac|flac|m4a)$/i.test(file.name)) {
                     displayMessage(`Skipped "${file.name}": Unsupported.`, 'error');
                     continue;
                 }
-                
-                // Get the full path from the file object
-                const filePath = file.path;
-                console.log('Adding file with path:', filePath); // Debug log
-                
-                // Store the original file object which contains the path in Electron
-                player.playlist.push({
-                    name: file.name,
-                    file: file,
-                    buffer: undefined
-                });
+
+                // Keep the handle (when the picker gave us one) so a saved playlist
+                // can re-open this exact file later. See the file-access layer above.
+                const song = { name: file.name, file: file, buffer: undefined, key: null };
+                if (entry.handle) {
+                    const key = makeSongKey();
+                    try {
+                        await storeHandle(key, entry.handle);
+                        song.key = key;
+                    } catch (error) {
+                        console.warn(`Could not persist handle for "${file.name}":`, error);
+                    }
+                }
+
+                player.playlist.push(song);
                 addedCount++;
             }
             if (addedCount > 0) {
@@ -1009,44 +1019,155 @@
              playSong(seekTime);
         }
 
+        // --- File Access Layer ---
+        // A browser cannot re-open a file from an absolute path the way the old
+        // Electron build did. Where the File System Access API is available
+        // (Chromium, secure contexts) we keep each FileSystemFileHandle in
+        // IndexedDB, so a saved playlist can re-open its audio later. Everywhere
+        // else we fall back to <input type="file">: the playlist still restores
+        // its track list, and the user re-adds the audio.
+        const hasFsAccess = typeof window.showOpenFilePicker === 'function';
+        const AUDIO_PICKER_TYPES = [{
+            description: 'Audio Files',
+            accept: { 'audio/*': ['.mp3', '.wav', '.ogg', '.flac', '.m4a', '.aac'] }
+        }];
+        const JSON_PICKER_TYPES = [{
+            description: 'JSON Files',
+            accept: { 'application/json': ['.json'] }
+        }];
+        const HANDLE_DB = 'music-player';
+        const HANDLE_STORE = 'file-handles';
+
+        function makeSongKey() {
+            if (window.crypto && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+            return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+        }
+
+        function openHandleDb() {
+            return new Promise((resolve, reject) => {
+                const request = indexedDB.open(HANDLE_DB, 1);
+                request.onupgradeneeded = () => {
+                    if (!request.result.objectStoreNames.contains(HANDLE_STORE)) {
+                        request.result.createObjectStore(HANDLE_STORE);
+                    }
+                };
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error);
+            });
+        }
+
+        async function withHandleStore(mode, run) {
+            const db = await openHandleDb();
+            try {
+                return await new Promise((resolve, reject) => {
+                    const tx = db.transaction(HANDLE_STORE, mode);
+                    const request = run(tx.objectStore(HANDLE_STORE));
+                    tx.onabort = () => reject(tx.error);
+                    tx.onerror = () => reject(tx.error);
+                    tx.oncomplete = () => resolve(request ? request.result : undefined);
+                });
+            } finally {
+                db.close();
+            }
+        }
+
+        function storeHandle(key, handle) { return withHandleStore('readwrite', store => store.put(handle, key)); }
+        function readHandle(key) { return withHandleStore('readonly', store => store.get(key)); }
+
+        /** Re-opens a stored handle as a File, re-prompting for permission when needed. */
+        async function fileFromHandle(handle) {
+            if (!handle) return null;
+            try {
+                let permission = await handle.queryPermission({ mode: 'read' });
+                if (permission === 'prompt') permission = await handle.requestPermission({ mode: 'read' });
+                if (permission !== 'granted') return null;
+                return await handle.getFile();
+            } catch (error) {
+                console.warn('Could not re-open stored file handle:', error);
+                return null;
+            }
+        }
+
+        async function addSongsViaPicker() {
+            if (!hasFsAccess) { addSongInput.click(); return; }
+            let handles;
+            try {
+                handles = await window.showOpenFilePicker({ multiple: true, types: AUDIO_PICKER_TYPES });
+            } catch (error) {
+                if (error.name === 'AbortError') return;
+                console.error('File picker failed, falling back to file input:', error);
+                addSongInput.click();
+                return;
+            }
+            const entries = [];
+            for (const handle of handles) {
+                try {
+                    entries.push({ file: await handle.getFile(), handle });
+                } catch (error) {
+                    console.error(`Could not read "${handle.name}":`, error);
+                    displayMessage(`Could not read "${handle.name}".`, 'error');
+                }
+            }
+            await addSongToPlaylist(entries);
+        }
+
         // --- Save/Load Playlist ---
+        function downloadJson(filename, json) {
+            const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+        }
+
         async function savePlaylistToFile() {
             if (player.playlist.length === 0) {
                 displayMessage('Playlist empty.', 'info');
                 return;
             }
-            const list = player.playlist.map(s => {
-                // Get the full path from the file object using webUtils
-                const filePath = window.electron.getFilePath(s.file);
-                console.log('File path:', filePath); // Debug log
-                return {
-                    name: s.name,
-                    path: filePath
-                };
-            });
-            
+            const json = JSON.stringify({
+                format: 'music-player-playlist',
+                version: 1,
+                songs: player.playlist.map(song => ({ name: song.name, key: song.key || null }))
+            }, null, 2);
+
             try {
-                const saved = await window.electron.ipcRenderer.invoke('save-playlist', list);
-                if (saved) {
-                    displayMessage('Playlist saved successfully.');
+                if (typeof window.showSaveFilePicker === 'function') {
+                    const handle = await window.showSaveFilePicker({
+                        suggestedName: 'playlist.json',
+                        types: JSON_PICKER_TYPES
+                    });
+                    const writable = await handle.createWritable();
+                    await writable.write(json);
+                    await writable.close();
+                } else {
+                    downloadJson('playlist.json', json);
                 }
+                displayMessage('Playlist saved successfully.');
             } catch (error) {
+                if (error.name === 'AbortError') return;
                 console.error('Save Error:', error);
                 displayMessage('Failed to save playlist.', 'error');
             }
         }
 
-        async function handleLoadPlaylistFile() {
-            try {
-                // Stop current playback first
-                stopSongInternal(true);
-                
-                const data = await window.electron.ipcRenderer.invoke('load-playlist');
-                if (!data) return;
+        /** Accepts this app's format and the older Electron `[{name, path}]` files. */
+        function normalizePlaylistData(parsed) {
+            const songs = Array.isArray(parsed) ? parsed : (parsed && parsed.songs);
+            if (!Array.isArray(songs)) throw new Error('Invalid format. Expected a playlist array.');
+            return songs.map(item => {
+                if (!item || typeof item.name !== 'string') throw new Error('Invalid entry: missing name.');
+                return { name: item.name, key: typeof item.key === 'string' ? item.key : null };
+            });
+        }
 
-                if (!Array.isArray(data) || !data.every(i => typeof i.name === 'string' && typeof i.path === 'string')) {
-                    throw new Error("Invalid format. Expected array of objects with name and path properties.");
-                }
+        async function applyPlaylistFile(file) {
+            try {
+                stopSongInternal(true);
+                const songs = normalizePlaylistData(JSON.parse(await file.text()));
 
                 player.playlist = [];
                 player.currentIndex = -1;
@@ -1054,51 +1175,53 @@
                 player.isPaused = false;
                 sourceNode = null;
 
-                // Try to load files from saved paths
-                for (const item of data) {
-                    if (item.path) {
-                        try {
-                            // Verify the file exists
-                            const fileExists = await window.electron.ipcRenderer.invoke('check-file-exists', item.path);
-                            if (!fileExists) {
-                                console.warn(`File not found: ${item.path}`);
-                                continue;
-                            }
-
-                            // Get the file data from the main process
-                            const fileData = await window.electron.ipcRenderer.invoke('get-file-data', item.path);
-                            if (!fileData) {
-                                console.warn(`Could not read file: ${item.path}`);
-                                continue;
-                            }
-
-                            // Create a File object from the data
-                            const file = new File([fileData], item.name, { type: 'audio/mpeg' });
-                            file.path = item.path; // Store the original path
-                            
-                            player.playlist.push({
-                                name: item.name,
-                                file: file,
-                                buffer: undefined
-                            });
-                        } catch (error) {
-                            console.error(`Error loading file ${item.path}:`, error);
-                        }
+                let restored = 0;
+                for (const item of songs) {
+                    let audio = null;
+                    if (item.key) {
+                        const handle = await readHandle(item.key).catch(error => {
+                            console.warn(`Could not look up handle for "${item.name}":`, error);
+                            return null;
+                        });
+                        audio = await fileFromHandle(handle);
                     }
+                    if (audio) restored++;
+                    player.playlist.push({
+                        name: item.name,
+                        file: audio || undefined,
+                        buffer: undefined,
+                        key: item.key
+                    });
                 }
 
                 resetProgress();
                 updatePlaylistDisplay();
                 updateButtonStates();
-                if (player.playlist.length > 0) {
-                    displayMessage(`Loaded ${player.playlist.length} songs.`, 'info');
-                } else {
-                    displayMessage('Loaded empty list.', 'info');
-                }
+
+                const total = player.playlist.length;
+                if (total === 0) displayMessage('Loaded empty list.', 'info');
+                else if (restored === total) displayMessage(`Loaded ${total} songs.`, 'info');
+                else displayMessage(`Loaded ${total} songs; ${total - restored} need re-adding.`, 'info');
             } catch (error) {
-                console.error("Load Error:", error);
+                console.error('Load Error:', error);
                 displayMessage(`Load failed: ${error.message}`, 'error');
+            } finally {
+                loadPlaylistInput.value = '';
             }
+        }
+
+        async function handleLoadPlaylistFile() {
+            if (!hasFsAccess) { loadPlaylistInput.click(); return; }
+            let handle;
+            try {
+                [handle] = await window.showOpenFilePicker({ multiple: false, types: JSON_PICKER_TYPES });
+            } catch (error) {
+                if (error.name === 'AbortError') return;
+                console.error('File picker failed, falling back to file input:', error);
+                loadPlaylistInput.click();
+                return;
+            }
+            await applyPlaylistFile(await handle.getFile());
         }
 
         // --- Event Listeners ---
@@ -1107,8 +1230,12 @@
         nextButton.addEventListener('click', playNextSong);
         previousButton.addEventListener('click', playPreviousSong);
         shuffleButton.addEventListener('click', toggleShuffle);
-        addSongButton.addEventListener('click', () => addSongInput.click());
+        addSongButton.addEventListener('click', addSongsViaPicker);
         addSongInput.addEventListener('change', (event) => addSongToPlaylist(event.target.files));
+        loadPlaylistInput.addEventListener('change', (event) => {
+            const [file] = event.target.files;
+            if (file) applyPlaylistFile(file);
+        });
         removeSongButton.addEventListener('click', removeSongFromPlaylist);
         moveUpButton.addEventListener('click', moveSongUp);
         moveDownButton.addEventListener('click', moveSongDown);

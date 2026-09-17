@@ -1,0 +1,23 @@
+# Everything the image does not serve.
+.git
+.github
+.agents
+.claude
+docs
+node_modules
+dist
+build
+out
+scripts
+main.js
+package.json
+package-lock.json
+zenith-compose.yml
+zenith-image-update
+Dockerfile
+.dockerignore
+.gitignore
+AGENTS.md
+CLAUDE.md
+README.md
+*.log
