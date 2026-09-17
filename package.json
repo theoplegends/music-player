@@ -2,9 +2,10 @@
   "name": "music-player",
   "version": "1.0.0",
   "main": "main.js",
-  "description": "A simple music player application",
+  "description": "A simple music player that runs in the browser or as a desktop app",
   "author": "theoplegends",
   "scripts": {
+    "serve": "node server.js",
     "start": "electron .",
     "dist": "electron-builder",
     "clean": "rimraf dist"
@@ -21,7 +22,10 @@
       "output": "dist"
     },
     "files": [
-      "**/*"
+      "index.html",
+      "main.js",
+      "assets/**/*",
+      "package.json"
     ],
     "win": {
       "target": [
