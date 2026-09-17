@@ -76,8 +76,20 @@ update a running Zenith deployment. Both remain separate, deliberate steps.
 
 ## GHCR package visibility
 
-The first publish creates the GHCR package as **private**. Zenith pulls anonymously,
-so the package must be public before the manifest will deploy. Check the package
-under <https://github.com/theoplegends?tab=packages> and, if it is private, use
-**Package settings → Change visibility → Public**. This is a one-time owner action;
-it cannot be done through the REST API.
+Zenith pulls anonymously, so `ghcr.io/theoplegends/music-player` must stay publicly
+pullable. This is verified on every publish: `scripts/zenith-prepare-image-update.sh`
+runs `scripts/zenith-check-image.py` with no credentials and then pulls the image
+with a throwaway Docker config. Confirmed working as of the first publish
+(`d56ed0a`).
+
+To check by hand at any time:
+
+```sh
+DOCKER_CONFIG=$(mktemp -d) python3 scripts/zenith-check-image.py \
+  ghcr.io/theoplegends/music-player@sha256:<digest>
+```
+
+If anonymous access is ever denied, find the package under
+<https://github.com/theoplegends?tab=packages> and set
+**Package settings → Change visibility → Public**. That is an owner action; GitHub
+offers no REST endpoint for it, and a public package cannot be made private again.

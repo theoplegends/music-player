@@ -1,0 +1,17 @@
+# https://zenith.hosting/developers
+
+x-zenith:
+  catalog:
+    name: Music Player
+  expose:
+    - service: app
+      port: 8080
+      web: true
+
+# Music Player is a client-side browser app served by a static Node server.
+# There is no backend and no server-side state: playlists, the selected theme,
+# and saved file handles live in each visitor's own browser. Hence no volumes,
+# no storage entries, no environment, and no dependent services.
+services:
+  app:
+    image: ghcr.io/theoplegends/music-player@sha256:55f4ec4cce2e0bcc61c707d5bd0bddae498212f923f51a12c1ea914a5e294073
